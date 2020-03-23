@@ -2,14 +2,6 @@ import socket, sys, threading, time, ctypes
 from TGSKeyData import *
 from DES import *
 
-PRca = [65537,
-149528699512355331950617158437205689962641679841951287818736694173430524716959483812917461770802212608043328183936552525043568074455738052445050577986833352259236057142049482388687029506718460278289214453416095255584782837301568810229584475388367554929282408185983247040122405879742753398303478073431163051643]
-# PRca=[5,2]
-# For p,q = 281, 293
-
-idToKey = {1:"65537,128734038322558840675499639659181884650263093020775590019691518744813102899260812877034992815664262701527457927623580843055438029031627541832027078343761541160533906120675473307461626639667939166648833235027654976370572851921941890307805185701924246363176656595328439882480387604987758970091391355061767317523"
-, 2:"65537,146419590359531671922689480690830618587349660996977693253584525470974100095725894689607009560036578111805834367576883813580166659608129392655316573764246272803827366366519291415541385349773303585892709330286653348288658081021486859618921563970726791682119007397041216512553290331679142392395035437585914618109"}
-
 def sock_send(sock , data):
     total = len(data)
     sl = 0
@@ -29,51 +21,39 @@ def handle_client(*args):
             #     continue
             data = data.split("||")
             opcode = data[0].strip()
-            if(opcode=="auth"):
-                # Ticket tgs = E(K tgs , [K c,tgs || ID C || AD C || ID tgs || TS 2 || Lifetime 2 ])
-                print(data)
+            if(opcode=="sgt"):
                 IDv = data[1]
                 tTGS = decrypt(hexToB(data[2]),keyTGS).split("||")
+                # [K c,tgs || IDc || ADc || IDtgs || TS2 || Lifetime2 ]
                 Kctgs,IDc,ADc,IDtgs,ts2,lf2 = tTGS
-                authenticator = data[3]
+                authenticator = decrypt(hexToB(data[3]),hexToB(Kctgs)).split("||")
+                # [IDc || ADc || TS3 ]
+                ts3 = float(authenticator[2])
                 ts4 = str(time.time())
                 Kcv = bToHex(passToKey(getRandStr(10)))
                 mV = "||".join([Kcv,IDc,ADc,IDv,ts4,'100'])
                 ticketV = bToHex(encrypt(mV,keys[str(IDv)]))
+                # E(Kv , [Kc,v || IDc || ADc || IDv || TS4 || Lifetime4 ])
                 mCTGS = "||".join([Kcv,IDv,ts4,ticketV])
+                # E(Kc,tgs , [Kc,v || IDv || TS4 || Ticketv ])
                 retTicket = bToHex(encrypt(mCTGS,hexToB(Kctgs)))
-                print(IDv,tTGS,authenticator)
-                print("\nmV:",mV)
-                print("retTicket",retTicket)
-                # ADc = str(list(addr)[0])
-                # Kctgs = bToHex(passToKey(getRandStr(10)))
-                # mTGS = "||".join([Kctgs,IDc,ADc,IDtgs,str(time.time()),'100'])
-                # # print(ticketTGS)
-                # ticketTGS = bToHex(encrypt(mTGS,keyTGS))
-                # print(ticketTGS)
-                # mC = "||".join([Kctgs,str(IDtgs),str(time.time()),'100',ticketTGS])
-                # ticketC = bToHex(encrypt(mC,keyC))
-                # # passwd = input("Enter pass: ")
-                # # passwd = passToKey(passwd)
-                # # print("passwd",passwd)
-                # # decrypted = decrypt(hexToB(encrypted),passwd)
-                # # print(decrypted)
+                
+                if(time.time()>float(ts2)+float(lf2)):
+                    print("TicketTGS expired.")
+                    continue
+                if(IDc==authenticator[0] and ADc==authenticator[1]
+                    and ts3+10>time.time()):
+                    print("Client identity verified using authenticator.")
+                else:
+                    print("Client identity not verified.")
+                    continue
+                print("Received Kc,tgs:",Kctgs)
+                print("Generated SGT:",ticketV)
                 sock_send(sock, retTicket.encode('utf-8'))
+                
             elif (opcode == "exit"):
                 sock_send(sock , "GoodBye".encode('utf-8'))
                 return
-            elif (opcode == "getPublicKey"):
-                # pass
-                clientID = int(data[1])
-                certificate = str(data[1])+","+idToKey[clientID]+","+str(time.time())
-                hashedCerti = customHash(certificate)
-                print("hashedCerti",hashedCerti)
-                encrypted = encrypt(hashedCerti,PRca[0],PRca[1])
-                print(encrypted)
-                signedCertificate = certificate+"||"+str(encrypted) 
-                print("signedCertificate",type(signedCertificate))
-                # val = signedCertificate.encode('utf-8')
-                sock_send(sock, signedCertificate.encode('utf-8'))
             else:
                 # data = ":".join(data)
                 # sock_send(sock, data.encode('utf-8'))

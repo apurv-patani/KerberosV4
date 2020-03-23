@@ -9,6 +9,7 @@ Kctgs = None
 Kcv = None
 ticketV = None
 IP = None
+hashfunc = None
 def getIP():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))
@@ -41,60 +42,96 @@ def tcp_connect(host , port):
 
 
 def client():
-    global shift,PUother, clientID
     sock = None
     while True:
         try:
             tokens = input(">> ").split(" ")
             data =tokens[0].strip()
             # data = tokens[0]
-            if(data=="as"):
+            if(data=="get" and tokens[1]=="tgt"):
+                # get tgt (ticker-granting ticket) through auth service exchange
                 global IDtgs
-                # IDc || IDtgs || TS 1
-                toSend = "||".join(["auth",str(ID), str(IDtgs), str(time.time())])
-                print(toSend)
-                sock_send(sock , toSend.encode('utf-8'))
+                request = "||".join(["tgt",str(ID), str(IDtgs), str(time.time())])
+                 # IDc || IDtgs || TS 1
+                print("Requesting TGT:\n",request,"\n")
+                sock_send(sock , request.encode('utf-8'))
                 recv = sock.recv(4096).decode('utf-8')
                 recv = hexToB(recv)
-                print("recv",recv)
-                passwd = input("Enter pass: ")
-                passwd = passToKey(passwd)
-                decrypted = decrypt(recv,passwd).split("||")
-                Kctgs,IDtgs,TS2,lf2,tTGS = decrypted
+                passwd = input("Enter password: ")
+                passwd = passToKey(passwd) #generate key using password
+                try:
+                	decrypted = decrypt(recv,passwd).split("||") # decryption using passwd
+                except Exception as e:
+                	print("Wrong password! Pleae try again.")
+                	continue
+                Kctgs,IDtgs,ts2,lf2,tTGS = decrypted # retriving Kc,tgs
+                if(time.time()>float(ts2)+float(lf2)):
+                    print("Ticket is expired.")
+                    continue
+                else:
+                    print("Verified that ticket is valid.")
+                print("Received TGT :",tTGS)
+                print("Received Kc,tgs:",Kctgs)
                 Kctgs = hexToB(Kctgs)
-                # print(decrypted)
-                # tokens = decrypted.split("||")
-            elif (data == "tgs"):
+
+            elif (data=="get" and tokens[1]=="sgt"):
                 mAuth = "||".join([str(ID),IP,str(time.time())])
-                authenticator = bToHex(encrypt(mAuth,Kctgs))
-                toSend = "||".join(["auth","3",str(tTGS), authenticator])
-                print(toSend)
-                sock_send(sock ,toSend.encode('utf-8'))
+                authenticator = bToHex(encrypt(mAuth,Kctgs)) 
+                # E(Kc,tgs , [IDc || ADc || TS3 ])
+                request = "||".join(["sgt",tokens[2],str(tTGS), authenticator])
+                 # IDv || Tickettgs || Authenticatorc
+                print("Requesting SGT for server", request)
+                sock_send(sock ,request.encode('utf-8'))
                 recv = sock.recv(4096).decode('utf-8')
-                Kcv,IDv,ts4,ticketV=decrypt(hexToB(recv),Kctgs).split("||")
-                print(Kcv,IDv,ts4,ticketV)
-            elif(data == "server"):
+                Kcv,IDv,ts4,ticketV=decrypt(hexToB(recv),Kctgs).split("||") 
+                # [Kc,v || IDv || TS4 || Ticketv ]
+                if(time.time()-100>float(ts4)):
+                    print("TGS Response expired.")
+                    continue
+                print("Received Kc,v:",Kcv)
+                print("Received SGT:",ticketV)
+
+            elif(data == "auth" and tokens[1]=="server"):
                 ts5 = str(int(time.time()))
-                print("ts5:",ts5)
                 mAuth = "||".join([str(ID),str(IP),ts5])
-                authenticator = bToHex(encrypt(mAuth,hexToB(Kcv)))
+                authenticator = bToHex(encrypt(mAuth,hexToB(Kcv))) 
+                # E (Kc,v , [IDc || ADc || TS5 ])
                 mV = "||".join(["auth",ticketV,authenticator])
-                print(mV)
+                print("Authenticating with server:",mV)
                 sock_send(sock ,mV.encode('utf-8'))
                 recv = sock.recv(4096).decode('utf-8')
-                ack = decrypt(hexToB(recv),hexToB(Kcv))
-                print(ack)
+                ack = decrypt(hexToB(recv),hexToB(Kcv)) # [TS5 + 1]
+                print("Received ack",ack,"for syn",ts5)
+                if(int(ts5)+1==int(ack)):
+                    print("Server Authenticated.")
+                else:
+                    print("Server Not Authenticated.")
+
             elif(data=="verifyID"):
                 encrypted = bToHex(encrypt(tokens[1],hexToB(Kcv)))
-                toSend = "||".join([tokens[0],encrypted])
+                 # E(Kc,v , [ID]) (enc)
+                toSend = "||".join([data,encrypted,hashfunc(encrypted)]) 
+                # ["verifyID" || enc || hash(enc)]
+                print("Requesting license info:",toSend)
                 sock_send(sock ,toSend.encode('utf-8'))
-                recv = sock.recv(4096).decode('utf-8')
-                license = decrypt(hexToB(recv),hexToB(Kcv)).split("||")
-                print("License No.:",license[0])
-                print("Name:",license[1])
-                print("Validity:",license[2]=="1")
-                print("Vehicle Type:",license[3])
-            elif(data == "c"):
+                recv = sock.recv(4096).decode('utf-8').split("||") 
+                # [data || hash(data)]
+                if(hashfunc(recv[0])!=recv[1]):
+                    print("Hash NOT Verified!")
+                    continue
+                license = decrypt(hexToB(recv[0]),hexToB(Kcv)).split("||") 
+                # [ID || Name || Validity || VehicleType]
+                print("Received Info:-")
+                if(len(license)==1):
+                    print(license[0])
+                    continue
+                else: 
+                    print("License No.:",license[0])
+                    print("Name:",license[1])
+                    print("Validity:",license[2]=="1")
+                    print("Vehicle Type:",license[3])
+
+            elif(data == "connect"):
                 host = '192.168.1.9'
                 port = tokens[1]
                 print("[+] Connecting to {}:{}".format(host , port))
@@ -104,50 +141,17 @@ def client():
                     return
                 print(sock)
                 print("[+] Connection to {}:{} Succeded".format(host , port))
-            elif(data == "get"):
-                data=("getPublicKey:"+tokens[1]).encode('utf-8')
-                # print("[+] Sent",str(data))
-                sock_send(sock , data)
-                recv = sock.recv(4096).decode('utf-8')
-                tokens = recv.split("||")
-                print(recv)
-                # print("tokens[1]",tokens[1])
-                certi = tokens[0]
-                hashedCerti = decrypt(tokens[1].strip(),PUca[0],PUca[1])
-                # print("hashedCerti",hashedCerti)
-                # print("certi",certi)
-                if(customHash(certi)==int(hashedCerti)):
-                    print("Signature Verified.")
-                else:
-                    print("Signature NOT verified.")
-                tokens = certi.split(",")
-                PUother = [int(tokens[1]),int(tokens[2])]
-                print("[+] Received Certificate :",certi)
-            elif(data == "hello"):
-                data = ":".join(tokens)
-                print("Sending data",data)
-                encrypted = encrypt(data,PUother[0],PUother[1])
-                sock_send(sock ,encrypted.encode('utf-8'))
-                recv = sock.recv(4096).decode('utf-8')
-                decrypted = decrypt(recv.strip(),PRa[0],PRa[1])
-                decrypted = str(hex(decrypted))[2:]
-                decrypted = (bytearray.fromhex(decrypted)).decode()
-                print("[+] Received",decrypted)
-            elif(data == "startServer"):
-                port = 7773
-                # if(len(tokens)>1):
-                    # port = tokens[-1]
-                
-                try:
-                    data = "exit".encode('utf-8')
-                    sock_send(sock , data)
-                    recv = sock.recv(4096).decode('utf-8')
-                    sock.close()
-                except:
-                   pass
-                th = threading.Thread(target=server , args=[port])
-                th.start()
 
+            elif(data=="useHash"):
+                # client and server decide on a common hash
+                encrypted = bToHex(encrypt(tokens[1],hexToB(Kcv))) # E(Kc,v, ["useHash || hashname"])
+                toSend = "||".join([tokens[0],encrypted]) 
+                print("Using Hash",tokens[1])
+                if(tokens[1]=="sha256"):
+                    hashfunc = lambda x : hashlib.sha256(x.encode()).hexdigest()
+                print("Requesting to use hash",tokens[1])
+                sock_send(sock ,toSend.encode('utf-8'))
+				# recv = sock.recv(4096).decode('utf-8')
             elif(data == "exit"):
                 data = data.encode('utf-8')
                 sock_send(sock , data)
